@@ -55,6 +55,7 @@ def test_graficos_saem_um_por_versao_e_grafo(tmp_path):
     for versao, variante, processos, tempo in [
         ("mpi", "base", 1, 8.0), ("mpi", "base", 2, 5.0), ("mpi", "otimizada", 1, 6.0),
         ("mpi", "otimizada", 2, 3.0), ("spark", "base", 1, 50.0), ("spark", "alteracao3", 1, 300.0),
+        ("sequencial", "base", 1, 7.0),
     ]:
         linhas.append(dict(versao=versao, variante=variante, vertices=1000, arestas=9000,
                            iteracoes=50, processos=processos, tempo_calculo=tempo))

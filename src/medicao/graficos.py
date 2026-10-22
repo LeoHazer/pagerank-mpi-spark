@@ -83,8 +83,11 @@ def arrumar_eixos(eixo, processos, titulo, rotulo_x, rotulo_y):
     eixo.tick_params(colors=TINTA_SECUNDARIA, labelsize=9)
 
 
-def desenhar_caso(resumo_do_caso, caminho):
-    """Uma figura com os três painéis para um caso (versão + grafo)."""
+def desenhar_caso(resumo_do_caso, caminho, tempo_sequencial=None):
+    """
+    Uma figura com os três painéis para um caso (versão + grafo).
+    tempo_sequencial, se existir, vira uma linha de referência no painel de tempo.
+    """
     versao = resumo_do_caso["versao"].iloc[0]
     vertices = resumo_do_caso["vertices"].iloc[0]
     arestas = resumo_do_caso["arestas"].iloc[0]
@@ -108,6 +111,11 @@ def desenhar_caso(resumo_do_caso, caminho):
     # referências: speedup ideal (y = p) e eficiência de 100%, em cinza tracejado
     speedup.plot(processos, processos, linestyle="--", color=CINZA, linewidth=1.2, label="ideal")
     eficiencia.axhline(1.0, linestyle="--", color=CINZA, linewidth=1.2)
+    referencias = []
+    if tempo_sequencial is not None:
+        # tempo da versão sequencial (sem dividir nada): abaixo da linha = mais rápido que ela
+        referencias.append(tempo.axhline(tempo_sequencial, linestyle=":", color=TINTA_SECUNDARIA,
+                                         linewidth=1.5, label="sequencial"))
 
     extras_usados = []
     variantes = sorted(resumo_do_caso["variante"].unique(),
@@ -115,7 +123,11 @@ def desenhar_caso(resumo_do_caso, caminho):
     for variante in variantes:
         linhas = resumo_do_caso[resumo_do_caso["variante"] == variante].sort_values("processos")
         cor, marcador, nome = estilo_da(variante, extras_usados)
+        # variante medida só em alguns valores (com buracos na lista): só os pontos, sem
+        # linha, para não sugerir que os valores intermediários foram medidos
+        tem_buracos = list(linhas["processos"]) != [p for p in processos if p <= linhas["processos"].max()]
         traco = dict(color=cor, marker=marcador, markersize=7, linewidth=2,
+                     linestyle="none" if tem_buracos else "-",
                      markeredgecolor=FUNDO, markeredgewidth=1, label=nome)
 
         # desvio vazio (uma rodada só) vira zero: a barrinha simplesmente não aparece
@@ -126,6 +138,8 @@ def desenhar_caso(resumo_do_caso, caminho):
 
     # tempos muito diferentes entre variantes (ex.: RDD) ficam legíveis em escala logarítmica
     medias = resumo_do_caso["tempo_medio"]
+    if tempo_sequencial is not None:
+        medias = pd.concat([medias, pd.Series([tempo_sequencial])])
     if medias.max() / medias.min() > 5:
         tempo.set_yscale("log")
         tempo.set_ylabel("segundos (escala logarítmica)", color=TINTA_SECUNDARIA)
@@ -136,13 +150,17 @@ def desenhar_caso(resumo_do_caso, caminho):
     else:
         tempo.set_ylim(bottom=0)
         tempo.yaxis.set_major_formatter(FuncFormatter(lambda valor, _: decimal(valor, 1)))
-    speedup.set_ylim(bottom=0)
+    # a altura acompanha o maior speedup medido; a linha do ideal pode sair por cima,
+    # senão ela (que chega a 128) achataria as curvas reais no rodapé
+    speedup.set_ylim(0, max(2.0, resumo_do_caso["speedup"].max() * 1.4))
     speedup.yaxis.set_major_formatter(FuncFormatter(lambda valor, _: decimal(valor, 1)))
     eficiencia.set_ylim(0, max(1.1, resumo_do_caso["eficiencia"].max() * 1.1))
     eficiencia.yaxis.set_major_formatter(FuncFormatter(lambda valor, _: f"{valor * 100:.0f}%"))
 
     # uma legenda só, embaixo dos três painéis
     marcas, nomes = speedup.get_legend_handles_labels()
+    marcas += referencias
+    nomes += [linha.get_label() for linha in referencias]
     figura.legend(marcas, nomes, loc="lower center", ncol=len(nomes), frameon=False,
                   fontsize=10, labelcolor=TINTA)
     figura.tight_layout(rect=(0, 0.08, 1, 0.94))
@@ -154,11 +172,18 @@ def gerar(medicoes, pasta):
     """Gera uma figura por caso e devolve a lista de arquivos criados."""
     os.makedirs(pasta, exist_ok=True)
     resumo = resumir(medicoes)
+    # a sequencial não ganha figura própria (seria um ponto só): vira referência nas outras
+    sequencial = resumo[resumo["versao"] == "sequencial"]
+    paralelas = resumo[resumo["versao"] != "sequencial"]
+
     arquivos = []
     # o caso aqui não separa por variante: todas as variantes vão no mesmo gráfico
-    for (versao, vertices), linhas in resumo.groupby(["versao", "vertices"]):
+    for (versao, vertices), linhas in paralelas.groupby(["versao", "vertices"]):
+        mesmo_grafo = sequencial[(sequencial["vertices"] == vertices)
+                                 & (sequencial["iteracoes"] == linhas["iteracoes"].iloc[0])]
+        tempo_sequencial = mesmo_grafo["tempo_medio"].iloc[0] if len(mesmo_grafo) else None
         caminho = os.path.join(pasta, f"{versao}_{vertices}_paginas.png")
-        desenhar_caso(linhas, caminho)
+        desenhar_caso(linhas, caminho, tempo_sequencial)
         arquivos.append(caminho)
     return arquivos
 
