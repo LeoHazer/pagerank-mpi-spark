@@ -1,0 +1,8 @@
+# Arquivos binários: o git nunca deve converter o fim de linha deles
+# (no Windows isso corromperia o PDF e as imagens)
+*.pdf binary
+*.png binary
+*.npz binary
+
+# Scripts do cluster sempre com fim de linha do Linux, senão o bash dá erro
+*.sh text eol=lf
