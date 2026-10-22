@@ -24,7 +24,7 @@ Todos os comandos são rodados a partir da raiz do projeto.
 
        python -m src.sequencial.pagerank --grafo dados/grafo_100k.npz
 
-   Com `--tolerancia 0 --max-iteracoes 50` ele roda sempre 50 iterações,
+   Com `--tolerancia 0 --max-iteracoes 25` ele roda sempre 25 iterações,
    o que deixa as medições de tempo comparáveis entre as versões.
 
 3. PageRank com MPI (4 processos):
@@ -43,15 +43,16 @@ Todos os comandos são rodados a partir da raiz do projeto.
 
 ## Como medir
 O rodador executa uma versão várias vezes (3 por padrão), com 1, 2, 4...
-processos e 50 iterações fixas, e anota cada execução em
-`resultados/medicoes.csv`:
+processos e 25 iterações fixas, e anota cada execução em
+`resultados/medicoes.csv`. O grafo de 1 milhão de páginas converge em 21
+iterações (tolerância 1e-10), então 25 chegam ao resultado final com folga.
 
     python -m src.medicao.rodar --versao sequencial --grafo dados/grafo_1m.npz
     python -m src.medicao.rodar --versao mpi --grafo dados/grafo_1m.npz --processos 1 2 4 8
     python -m src.medicao.rodar --versao spark --grafo dados/grafo_1m.npz --processos 1 2 4 8
 
-No cluster, use `--mpi-extra "--hostfile hosts --oversubscribe"` no MPI e
-`--master spark://<ip-do-mestre>:7077` no Spark.
+Para rodar mais processos MPI do que núcleos físicos, acrescente
+`--mpi-extra=--oversubscribe`.
 
 Depois, o analisador calcula tempo médio, speedup e eficiência:
 
@@ -85,6 +86,17 @@ versão para estimar a duração das medições:
     tail -f calibracao.log
 
 O `nohup ... &` mantém o script rodando mesmo se a conexão cair.
+
+As medições oficiais (cerca de 3 horas) ficam em `medir_tudo.sh` e são
+anotadas em `resultados/medicoes_cluster.csv`; no fim, o próprio script
+gera o resumo e os gráficos:
+
+    nohup bash cluster/medir_tudo.sh > medicao.log 2>&1 &
+    tail -f medicao.log
+
+Para interromper antes do fim (o que já terminou continua na planilha):
+
+    pkill -f cluster/medir_tudo.sh; pkill -f src.medicao.rodar
 
 Atenção: a conta do cluster define `SPARK_HOME` apontando para o Spark
 4.0.1 instalado lá, e o nosso pyspark (4.2.0) tentaria usá-lo. Os scripts
