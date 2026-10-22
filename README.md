@@ -105,6 +105,10 @@ Atenção: a conta do cluster define `SPARK_HOME` apontando para o Spark
 já fazem `unset SPARK_HOME`; ao rodar comandos à mão, faça o mesmo antes
 (vale só para o terminal aberto; não altere o `.bashrc`, que é compartilhado).
 
+## Relatório
+O relatório do trabalho, com os resultados das medições no cluster, está
+em `docs/relatorio.pdf`.
+
 ## Alterações de desempenho
 As versões originais (`src/mpi/pagerank.py` e `src/spark/pagerank.py`)
 não mudam. As alterações ficam em `pagerank_alterado.py`, escolhidas com
