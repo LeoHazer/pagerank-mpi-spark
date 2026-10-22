@@ -10,6 +10,8 @@ import os
 import socket
 from datetime import datetime
 
+# ordem das colunas da planilha; toda execução (sequencial, MPI ou Spark)
+# grava nessas mesmas colunas, assim dá para comparar tudo numa tabela só
 COLUNAS = [
     "data_hora",
     "maquina",
@@ -29,19 +31,30 @@ COLUNAS = [
 
 def registrar(caminho, **valores):
     """Acrescenta uma linha ao CSV; cria o arquivo (com o cabeçalho) se ele ainda não existir."""
+    # **valores recebe os parâmetros com nome em um dicionário: chamar
+    # registrar("x.csv", versao="mpi", processos=4) dá {"versao": "mpi", "processos": 4}.
+    # Primeiro, cria a pasta do arquivo se ela não existir (exist_ok=True: sem erro
+    # se ela já existir). O "if" cobre o caso de um caminho sem pasta, como "medicoes.csv"
     pasta = os.path.dirname(caminho)
     if pasta:
         os.makedirs(pasta, exist_ok=True)
+    # precisa ser verificado ANTES de abrir: abrir com "a" já cria o arquivo vazio
     arquivo_novo = not os.path.exists(caminho)
 
+    # data/hora e nome do computador são preenchidos aqui; o resto vem de quem chamou.
+    # Os ** "espalham" o dicionário valores dentro deste.
+    # Colunas que ninguém informou (ex.: particoes fora do Spark) ficam vazias
     linha = {
         "data_hora": datetime.now().isoformat(timespec="seconds"),
         "maquina": socket.gethostname(),
         **valores,
     }
-    # "a" abre o arquivo para acrescentar no final, sem apagar o que já existe
+    # "a" abre o arquivo para acrescentar no final, sem apagar o que já existe.
+    # newline="" é o pedido do módulo csv para não sair linha em branco extra no Windows
     with open(caminho, "a", newline="", encoding="utf-8") as arquivo:
+        # DictWriter escreve dicionários: põe cada valor na coluna com o mesmo nome
         escritor = csv.DictWriter(arquivo, fieldnames=COLUNAS)
+        # o cabeçalho (nomes das colunas) só vai uma vez, na primeira linha do arquivo
         if arquivo_novo:
             escritor.writeheader()
         escritor.writerow(linha)

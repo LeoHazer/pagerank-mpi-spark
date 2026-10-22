@@ -23,10 +23,12 @@ Uso (a partir da raiz do projeto):
 
 import argparse
 import time
+# add(a, b) faz a + b; é a função de soma usada no reduceByKey da alteração 3
 from operator import add
 
 import numpy as np
 import pandas as pd
+# Observation: "caderninho" onde o Spark anota um resultado enquanto faz outra conta
 from pyspark.sql import Observation
 from pyspark.sql import functions as F
 
@@ -34,8 +36,10 @@ from src.comum.grafo import carregar_grafo
 from src.comum.relatorio import linhas_do_top, porcentagem
 from src.comum.resultados import registrar
 from src.sequencial.pagerank import AMORTECIMENTO, MAX_ITERACOES, TOLERANCIA
+# reaproveita da original a sessão, a memória padrão e a conversão final para NumPy
 from src.spark.pagerank import MEMORIA, criar_sessao, para_numpy
 
+# rótulo que vai para a planilha de tempos em cada opção do --alteracao
 NOMES = {"1": "alteracao1", "2": "alteracao2", "3": "alteracao3", "otimizada": "otimizada"}
 
 
@@ -45,6 +49,7 @@ NOMES = {"1": "alteracao1", "2": "alteracao2", "3": "alteracao3", "otimizada": "
 
 def preparar_tabelas(spark, grafo, particoes, por_destino):
     """Igual à original, mas com a divisão por destino (alteração 2) e a marca de página sem saída."""
+    # resultado de cada join e groupBy fica com 'particoes' pedaços (o padrão seria 200)
     spark.conf.set("spark.sql.shuffle.partitions", str(particoes))
 
     grau = grafo.grau_saida()
@@ -53,15 +58,19 @@ def preparar_tabelas(spark, grafo, particoes, por_destino):
         "destino": grafo.destinos,
         "peso": 1.0 / grau[grafo.origens],
     })
-    # alteração 2: cada pedaço da tabela fica com os links que chegam num grupo de páginas
+    # alteração 2: cada pedaço da tabela fica com os links que chegam num grupo de páginas.
+    # Como a soma da rodada é agrupada por destino, cada executor já tem todos os links de
+    # "suas" páginas e consegue somar sozinho. Na original a divisão é por origem.
     chave = "destino" if por_destino else "origem"
     arestas = spark.createDataFrame(pares).repartition(particoes, chave)
 
     # a coluna sem_saida marca as páginas que não apontam para ninguém (usada na alteração 1)
+    # (ex.: uma página com grau de saída 0 fica com sem_saida = True)
     paginas = pd.DataFrame({"id": np.arange(grafo.n_vertices), "sem_saida": grau == 0})
     vertices = spark.createDataFrame(paginas).repartition(particoes, "id")
     sem_saida = spark.createDataFrame(pd.DataFrame({"id": np.flatnonzero(grau == 0)}), "id long")
 
+    # cache guarda na memória dos executores; o count obriga a montar agora (fora do cálculo)
     for tabela in (arestas, vertices, sem_saida):
         tabela.cache().count()
     return arestas, vertices, sem_saida
@@ -73,16 +82,22 @@ def pagerank_tabelas(arestas, vertices, sem_saida, n_vertices,
     """Mesmo algoritmo da original, com a alteração 1 (observar_massa) e/ou a 2 (broadcast)."""
     # na alteração 1 a tabela de notas carrega junto a marca de página sem saída
     colunas = ["id", "sem_saida"] if observar_massa else ["id"]
+    # começa com todas empatadas; o localCheckpoint calcula e guarda a tabela já agora
     ranks = vertices.select(*colunas).withColumn("rank", F.lit(1.0 / n_vertices)).localCheckpoint()
 
     if observar_massa:
         # na primeira rodada todas valem 1/N; a massa é (quantas páginas sem saída) / N
+        # (esse count roda uma vez só, antes do laço; nas outras rodadas o observe resolve)
         massa = sem_saida.count() / n_vertices
 
     iteracao = 0
     for iteracao in range(1, max_iteracoes + 1):
         # alteração 2: broadcast manda a tabela de notas inteira para cada executor,
-        # então o join acontece ali mesmo, sem trocar links entre executores
+        # então o join acontece ali mesmo, sem trocar links entre executores.
+        # Como os links já estão divididos por destino, o groupBy("destino") logo abaixo
+        # também não precisa de shuffle: cada executor soma as páginas que já são dele.
+        # O custo é copiar a tabela de notas (N linhas) por rodada, bem menor que mover
+        # todos os links. Sem a alteração 2 é o mesmo join + groupBy da original.
         notas = F.broadcast(ranks) if broadcast else ranks
         recebido = (
             arestas.join(notas, arestas.origem == notas.id)
@@ -92,8 +107,11 @@ def pagerank_tabelas(arestas, vertices, sem_saida, n_vertices,
 
         if not observar_massa:
             # original: uma ida extra ao gerente só para somar a nota das páginas sem saída
+            # (o first() é uma ação: dispara um job e traz o número para o driver)
             massa = sem_saida.join(ranks, "id").agg(F.sum("rank")).first()[0] or 0.0
 
+        # left join com vertices: mantém as páginas que não receberam nenhum link
+        # (o coalesce troca o "recebido" vazio por 0). Mesma fórmula da original.
         novo = vertices.join(recebido, vertices.id == recebido.destino, "left").select(
             *colunas,
             (F.lit((1.0 - d) / n_vertices)
@@ -103,18 +121,25 @@ def pagerank_tabelas(arestas, vertices, sem_saida, n_vertices,
 
         if observar_massa:
             # alteração 1: enquanto monta a tabela nova, o Spark já anota a soma das
-            # páginas sem saída, que é exatamente a massa da próxima rodada
+            # páginas sem saída, que é exatamente a massa da próxima rodada.
+            # observe só pendura essa soma na receita; ela é calculada de carona quando
+            # alguma ação passar pelas linhas (aqui, o localCheckpoint logo abaixo).
+            # O when/otherwise soma o rank só das linhas com sem_saida = True (as outras
+            # entram como 0). Assim a rodada tem um job a menos que a original.
             observacao = Observation()
             novo = novo.observe(
                 observacao,
                 F.sum(F.when(F.col("sem_saida"), F.col("rank")).otherwise(0.0)).alias("massa"),
             )
+        # calcula a rodada agora e esquece o histórico das anteriores (ver a original)
         novo = novo.localCheckpoint()
         if observar_massa:
+            # o localCheckpoint já rodou, então o valor anotado já está pronto no driver
             massa = observacao.get["massa"] or 0.0
 
         parar = False
         if tolerancia > 0:
+            # distância L1 entre a nota nova e a antiga de cada página (mais um job)
             variacao = (
                 novo.join(ranks.select("id", F.col("rank").alias("antigo")), "id")
                 .agg(F.sum(F.abs(F.col("rank") - F.col("antigo"))))
@@ -132,30 +157,45 @@ def pagerank_tabelas(arestas, vertices, sem_saida, n_vertices,
 # ---------------------------------------------------------------------------
 # Alteração 3 (RDD)
 # ---------------------------------------------------------------------------
+# RDD é a forma mais antiga e "crua" do Spark: uma lista distribuída de objetos
+# Python. Aqui cada linha é uma tupla (chave, valor), e as operações por chave
+# (join, reduceByKey) usam o primeiro item da tupla como chave. As contas rodam
+# em processos Python ao lado dos executores, e não dentro do Spark (Java).
 
 def preparar_rdds(spark, grafo, particoes):
     """
     As mesmas três tabelas da original, mas como RDDs de tuplas do Python.
     Cada link vira (origem, (destino, peso)); cada página vira (id, 0).
     """
+    # o SparkContext é a "porta de entrada" para criar RDDs
     sc = spark.sparkContext
     grau = grafo.grau_saida()
     peso = 1.0 / grau[grafo.origens]
 
     # mandamos blocos do NumPy e cada executor transforma o seu bloco em tuplas;
-    # criar 10 milhões de tuplas no driver de uma vez gastaria memória demais
+    # criar 10 milhões de tuplas no driver de uma vez gastaria memória demais.
+    # array_split corta cada vetor em (particoes * 4) blocos do mesmo tamanho, e o zip
+    # junta os pedaços correspondentes: cada bloco é (origens, destinos, pesos).
     blocos = list(zip(np.array_split(grafo.origens, particoes * 4),
                       np.array_split(grafo.destinos, particoes * 4),
                       np.array_split(peso, particoes * 4)))
     arestas = (
+        # parallelize: um bloco por pedaço, enviado aos executores
         sc.parallelize(blocos, len(blocos))
+        # lambda = função curta sem nome. Roda nos executores: tolist() troca os números
+        # do NumPy por números do Python, e o flatMap transforma cada bloco em várias
+        # linhas (origem, (destino, peso)). Ex.: o link 3 -> 7 vira (3, (7, 0.5)).
         .flatMap(lambda b: zip(b[0].tolist(), zip(b[1].tolist(), b[2].tolist())))
-        # partitionBy: todos os links de uma mesma origem vão para o mesmo pedaço
+        # partitionBy: todos os links de uma mesma origem vão para o mesmo pedaço,
+        # já organizados pela chave do join com as notas em cada rodada
         .partitionBy(particoes)
     )
+    # RDD por chave precisa de pares; o 0 é só um valor de enfeite
     vertices = sc.parallelize(range(grafo.n_vertices), particoes).map(lambda v: (v, 0))
+    # int(v) troca o inteiro do NumPy por um inteiro comum do Python, como nas outras RDDs
     sem_saida = sc.parallelize([(int(v), 0) for v in np.flatnonzero(grau == 0)], particoes)
 
+    # cache guarda na memória; o count obriga a montar agora (fora do tempo de cálculo)
     for rdd in (arestas, vertices, sem_saida):
         rdd.cache().count()
     return arestas, vertices, sem_saida
@@ -164,30 +204,44 @@ def preparar_rdds(spark, grafo, particoes):
 def pagerank_rdd(arestas, vertices, sem_saida, n_vertices, particoes,
                  d=AMORTECIMENTO, tolerancia=TOLERANCIA, max_iteracoes=MAX_ITERACOES):
     """Mesmos passos da versão com tabelas: join, soma por destino e left join."""
+    # mapValues muda só o valor e mantém a chave: (id, 0) vira (id, 1/N)
     ranks = vertices.mapValues(lambda _: 1.0 / n_vertices)
+    # no RDD o localCheckpoint só marca; o count é que obriga o cálculo agora
     ranks.localCheckpoint()
     ranks.count()
 
     iteracao = 0
     for iteracao in range(1, max_iteracoes + 1):
         # (origem, ((destino, peso), rank)) -> (destino, rank * peso), somado por destino
+        # O join junta link e nota pela origem: (3, (7, 0.5)) + (3, 0.2) = (3, ((7, 0.5), 0.2)).
+        # Daí par[1][0][0] é o destino, par[1][0][1] o peso e par[1][1] o rank: sai (7, 0.1).
+        # reduceByKey(add) soma os valores de mesma chave (o destino), como o groupBy + sum
+        # das tabelas ou o bincount da sequencial; ele soma primeiro dentro de cada pedaço
+        # e só depois troca os subtotais entre os executores.
         recebido = (
             arestas.join(ranks, particoes)
             .map(lambda par: (par[1][0][0], par[1][1] * par[1][0][1]))
             .reduceByKey(add, particoes)
         )
+        # (id, (0, rank)) -> rank; o sum() é uma ação e traz o total para o driver
         massa = sem_saida.join(ranks, particoes).map(lambda par: par[1][1]).sum()
 
-        # m=massa "congela" o valor desta rodada dentro da função
+        # leftOuterJoin = left join: toda página de vertices fica, e quem não recebeu nada
+        # vem com None, que o "or 0.0" vira zero. Cada linha é (id, (0, recebido)), então
+        # par[1] é o recebido. A fórmula é a mesma das outras versões.
+        # m=massa "congela" o valor desta rodada dentro da função: a lambda guarda a
+        # variável, não o valor, e poderia acabar enxergando a massa de outra rodada.
         novo = vertices.leftOuterJoin(recebido, particoes).mapValues(
             lambda par, m=massa: (1.0 - d) / n_vertices + d * ((par[1] or 0.0) + m / n_vertices)
         )
         # no RDD o localCheckpoint só marca; o count é que obriga o cálculo agora
+        # (e corta o histórico das rodadas anteriores, como na versão com tabelas)
         novo.localCheckpoint()
         novo.count()
 
         parar = False
         if tolerancia > 0:
+            # (id, (nova, antiga)) -> |nova - antiga|, somado: a distância L1
             variacao = novo.join(ranks, particoes).map(lambda par: abs(par[1][0] - par[1][1])).sum()
             parar = variacao < tolerancia
 
@@ -200,6 +254,7 @@ def pagerank_rdd(arestas, vertices, sem_saida, n_vertices, particoes,
 
 def rdd_para_numpy(ranks):
     """Traz as notas para o driver, na ordem dos ids."""
+    # collect traz todas as tuplas (id, rank) para o driver; sorted ordena pelo id
     return np.array([rank for _, rank in sorted(ranks.collect())])
 
 
@@ -231,15 +286,18 @@ def main() -> None:
     inicio_programa = time.perf_counter()
 
     spark = criar_sessao(args.master, args.nucleos, args.memoria)
+    # defaultParallelism = total de núcleos que o Spark recebeu
     nucleos = args.nucleos or spark.sparkContext.defaultParallelism
     particoes = args.particoes or nucleos
     usa_rdd = args.alteracao == "3"
+    # parâmetros do algoritmo, passados com * para as duas funções de cálculo
     opcoes = (args.amortecimento, args.tolerancia, args.max_iteracoes)
 
     inicio = time.perf_counter()
     grafo = carregar_grafo(args.grafo)
     tempo_leitura = time.perf_counter() - inicio
 
+    # a divisão por destino só vale nas opções que usam a alteração 2
     inicio = time.perf_counter()
     if usa_rdd:
         tabelas = preparar_rdds(spark, grafo, particoes)
@@ -248,6 +306,7 @@ def main() -> None:
                                    por_destino=args.alteracao in ("2", "otimizada"))
     tempo_distribuicao = time.perf_counter() - inicio
 
+    # "otimizada" liga as alterações 1 e 2 ao mesmo tempo
     inicio = time.perf_counter()
     if usa_rdd:
         ranks, iteracoes = pagerank_rdd(*tabelas, grafo.n_vertices, particoes, *opcoes)
@@ -260,6 +319,7 @@ def main() -> None:
     tempo_calculo = time.perf_counter() - inicio
     tempo_total = time.perf_counter() - inicio_programa
 
+    # fora da medição: traz as notas para o driver só para mostrar e salvar
     rank = rdd_para_numpy(ranks) if usa_rdd else para_numpy(ranks)
 
     variante = args.variante or NOMES[args.alteracao]
