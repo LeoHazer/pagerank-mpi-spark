@@ -24,7 +24,7 @@ Todos os comandos são rodados a partir da raiz do projeto.
 
        python -m src.sequencial.pagerank --grafo dados/grafo_100k.npz
 
-   Com `--tolerancia 0 --max-iteracoes 25` ele roda sempre 25 iterações,
+   Com `--tolerancia 0 --max-iteracoes 10` ele roda sempre 10 iterações,
    o que deixa as medições de tempo comparáveis entre as versões.
 
 3. PageRank com MPI (4 processos):
@@ -43,9 +43,11 @@ Todos os comandos são rodados a partir da raiz do projeto.
 
 ## Como medir
 O rodador executa uma versão várias vezes (3 por padrão), com 1, 2, 4...
-processos e 25 iterações fixas, e anota cada execução em
-`resultados/medicoes.csv`. O grafo de 1 milhão de páginas converge em 21
-iterações (tolerância 1e-10), então 25 chegam ao resultado final com folga.
+processos e 10 iterações fixas, e anota cada execução em
+`resultados/medicoes.csv`. Cada iteração leva sempre o mesmo tempo, então
+o speedup não depende de quantas iterações rodamos; a correção do
+resultado é conferida pelos testes, que rodam até convergir (o grafo de
+1 milhão de páginas converge em 21 iterações, com tolerância 1e-10).
 
     python -m src.medicao.rodar --versao sequencial --grafo dados/grafo_1m.npz
     python -m src.medicao.rodar --versao mpi --grafo dados/grafo_1m.npz --processos 1 2 4 8
@@ -87,7 +89,7 @@ versão para estimar a duração das medições:
 
 O `nohup ... &` mantém o script rodando mesmo se a conexão cair.
 
-As medições oficiais (cerca de 3 horas) ficam em `medir_tudo.sh` e são
+As medições oficiais (cerca de 50 minutos) ficam em `medir_tudo.sh` e são
 anotadas em `resultados/medicoes_cluster.csv`; no fim, o próprio script
 gera o resumo e os gráficos:
 

@@ -5,8 +5,9 @@ processos, e anota os tempos numa planilha CSV.
 Cada caso é repetido algumas vezes (o artigo de referência usa 3) porque o
 tempo varia um pouco de uma execução para outra; depois usamos a média.
 Todas as execuções usam um número fixo de iterações (tolerância 0) para
-que o trabalho feito seja sempre o mesmo. O padrão é 25: o grafo de
-1 milhão de páginas converge em 21, então 25 dá o resultado final com folga.
+que o trabalho feito seja sempre o mesmo. O padrão é 10: cada iteração
+leva sempre o mesmo tempo, então o speedup não depende de quantas rodamos
+(a correção do resultado é conferida pelos testes, que rodam até convergir).
 
 Exemplos (a partir da raiz do projeto):
     python -m src.medicao.rodar --versao mpi --grafo dados/grafo_1m.npz --processos 1 2 4
@@ -66,8 +67,7 @@ def main() -> None:
     parser.add_argument("--processos", type=int, nargs="+", default=[1, 2, 4],
                         help="lista de quantidades de processos, ex.: 1 2 4 8")
     parser.add_argument("--repeticoes", type=int, default=3, help="quantas vezes rodar cada caso")
-    # o grafo de 1 milhão de páginas converge em 21 iterações (tolerância 1e-10); 25 dá folga
-    parser.add_argument("--iteracoes", type=int, default=25, help="iterações fixas do PageRank")
+    parser.add_argument("--iteracoes", type=int, default=10, help="iterações fixas do PageRank")
     parser.add_argument("--csv", type=str, default="resultados/medicoes.csv")
     parser.add_argument("--alteracao", choices=["1", "2", "3", "otimizada"], default=None,
                         help="mede uma versão alterada; sem esta opção mede a original")
