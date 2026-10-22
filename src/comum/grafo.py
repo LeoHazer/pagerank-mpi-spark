@@ -45,7 +45,10 @@ def _limpar_arestas(n_vertices, origens, destinos):
 
     # 2) remove links repetidos: transformamos cada par (origem, destino)
     #    em um número único e deixamos o NumPy descartar os repetidos.
+    #    Ex.: com N = 1.000.000, o link 3 -> 7 vira 3.000.007; dois links
+    #    iguais viram o mesmo número, e o np.unique deixa só um de cada.
     chaves = np.unique(origens * n_vertices + destinos)
+    # desfaz a conta: a divisão inteira devolve a origem e o resto, o destino
     origens = (chaves // n_vertices).astype(np.int64)
     destinos = (chaves % n_vertices).astype(np.int64)
     return origens, destinos
@@ -88,13 +91,23 @@ def gerar_grafo_aleatorio(n_vertices, grau_medio, semente=42) -> Grafo:
       cria páginas muito populares (ids pequenos).
     - A mesma 'semente' sempre gera o mesmo grafo (reprodutível).
     """
+    # sorteador de números; com a mesma semente, o sorteio sai sempre igual
     gerador = np.random.default_rng(semente)
+    # total de links sorteados (ex.: 1 milhão de páginas x 10 = 10 milhões)
     n_sorteios = int(n_vertices * grau_medio)
 
+    # ORIGEM: uma página de 0 a N-1 para cada link, todas com a mesma chance
     origens = gerador.integers(0, n_vertices, size=n_sorteios)
-    destinos = (n_vertices * gerador.random(n_sorteios) ** 3).astype(np.int64)
-    destinos = np.minimum(destinos, n_vertices - 1)  # segurança contra u == 1.0
 
+    # DESTINO: sorteia um número entre 0 e 1 e eleva ao cubo. Elevar ao cubo
+    # puxa os valores para perto de zero (0,5 vira 0,125; 0,1 vira 0,001),
+    # então números de página baixos saem muito mais: são as páginas "famosas".
+    # Multiplicar por N e cortar a parte decimal transforma em número de página.
+    destinos = (n_vertices * gerador.random(n_sorteios) ** 3).astype(np.int64)
+    # segurança: se o sorteio der exatamente 1,0, a página N não existiria
+    destinos = np.minimum(destinos, n_vertices - 1)
+
+    # tira links de uma página para ela mesma e links repetidos
     return criar_grafo(n_vertices, origens, destinos)
 
 
